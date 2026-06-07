@@ -1,0 +1,13 @@
+langgraph==1.2.0
+langchain-core
+langchain-groq
+langchain-postgres
+langchain-chroma
+chromadb
+fastembed
+pypdf
+psycopg[binary]
+sqlalchemy
+python-dotenv
+streamlit
+pydantic
