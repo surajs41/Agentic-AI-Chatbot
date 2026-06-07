@@ -11,3 +11,6 @@ sqlalchemy
 python-dotenv
 streamlit
 pydantic
+plotly
+pandas
+python-docx

@@ -8,7 +8,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 import os
 
-from rag_backend import format_sources, retrieve_context
+from rag_backend import DEFAULT_COLLECTIONS, format_sources, retrieve_context
 
 load_dotenv()
 
@@ -19,9 +19,9 @@ llm = ChatGroq(
 
 RAG_SYSTEM_PROMPT = """You are a document Q&A assistant powered by RAG (Retrieval-Augmented Generation).
 
-Answer the user's question using ONLY the context retrieved from uploaded PDF documents.
+Answer the user's question using ONLY the context retrieved from uploaded documents.
 If the answer is not present in the context, clearly say that the information was not found in the documents.
-Keep answers concise, accurate, and well-structured.
+Keep answers concise, accurate, and well-structured. Use markdown and code blocks when helpful.
 
 Retrieved context:
 {context}
@@ -36,6 +36,7 @@ class RAGState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     context: str
     sources: list
+    collection: str
 
 
 def chat_node(state: ChatState):
@@ -45,7 +46,8 @@ def chat_node(state: ChatState):
 
 def rag_retrieve_node(state: RAGState):
     query = state["messages"][-1].content
-    context, sources = retrieve_context(query)
+    collection = state.get("collection") or "General"
+    context, sources = retrieve_context(query, collection=collection)
     return {"context": context, "sources": sources}
 
 
@@ -73,4 +75,4 @@ rag_graph.add_edge("retrieve", "generate")
 rag_graph.add_edge("generate", END)
 rag_chatbot = rag_graph.compile(checkpointer=checkpoint)
 
-__all__ = ["chatbot", "rag_chatbot", "format_sources"]
+__all__ = ["chatbot", "rag_chatbot", "format_sources", "llm"]

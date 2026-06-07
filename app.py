@@ -1,3 +1,6 @@
+import io
+import time
+
 import streamlit as st
 from langchain_core.messages import HumanMessage
 
@@ -7,16 +10,43 @@ from chat_storage import (
     auto_title,
     create_session,
     delete_session,
+    export_session_txt,
+    get_document_chunks,
     get_messages,
     get_storage_label,
     init_chat_db,
+    list_documents,
     list_sessions,
+    register_document,
+    save_document_chunks,
     update_session_title,
 )
-from rag_backend import check_db_connection, get_active_backend, ingest_pdf_file
+from rag_backend import (
+    check_db_connection,
+    get_active_backend,
+    ingest_file,
+)
+from resume_service import analyze_jd_and_resume, build_resume_docx, extract_resume_text
+from ui.analytics_dashboard import render_analytics_dashboard
+from ui.components import (
+    MODEL_NAME,
+    render_assistant_actions,
+    render_chunk_analytics_box,
+    render_doc_landing,
+    render_agent_steps,
+    render_landing_hero,
+    render_message_header,
+    render_model_info_panel,
+    render_sources_panel,
+)
+from ui.themes import THEMES, build_css
+
+MODE_GENERAL = "general"
+MODE_RAG = "rag"
+COLLECTION = "General"
 
 st.set_page_config(
-    page_title="Agentic AI Chatbot",
+    page_title="Agentic AI Assistant",
     page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -24,458 +54,426 @@ st.set_page_config(
 
 init_chat_db()
 
-CUSTOM_CSS = """
-<style>
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+for key, val in {
+    "theme": "dark",
+    "active_general_session": None,
+    "active_doc_session": None,
+    "selected_doc": None,
+    "agent_steps": [],
+    "last_sources": [],
+    "last_runtime": {},
+    "doc_last_sources": [],
+    "doc_last_runtime": {},
+    "resume_file_name": None,
+    "resume_file_bytes": None,
+    "last_resume_docx": None,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = val
 
-html, body, [class*="css"] {
-    font-family: 'Plus Jakarta Sans', sans-serif !important;
-}
+if st.session_state.theme not in THEMES:
+    st.session_state.theme = "dark"
 
-.stApp {
-    background: radial-gradient(ellipse at 20% 0%, #1a1f3c 0%, #0b1120 45%, #0b1120 100%);
-}
-
-.main .block-container {
-    padding-top: 1rem;
-    padding-bottom: 6rem;
-    max-width: 920px;
-}
-
-#MainMenu, footer, header { visibility: hidden; }
-
-/* ── Sidebar ── */
-[data-testid="stSidebar"] {
-    background: linear-gradient(180deg, #111827 0%, #0d1321 100%);
-    border-right: 1px solid rgba(99, 102, 241, 0.15);
-}
-[data-testid="stSidebar"] .stMarkdown p,
-[data-testid="stSidebar"] .stMarkdown h2,
-[data-testid="stSidebar"] .stMarkdown h3,
-[data-testid="stSidebar"] .stMarkdown h4,
-[data-testid="stSidebar"] .stMarkdown h5,
-[data-testid="stSidebar"] label,
-[data-testid="stSidebar"] .stCaption {
-    color: #e2e8f0 !important;
-}
-
-/* File uploader — fix invisible text on white box */
-[data-testid="stSidebar"] [data-testid="stFileUploader"],
-[data-testid="stSidebar"] [data-testid="stFileUploader"] > section,
-[data-testid="stSidebar"] [data-testid="stFileUploader"] > div {
-    background: #151d2e !important;
-    border: 1px dashed rgba(99,102,241,0.45) !important;
-    border-radius: 12px !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] * {
-    color: #cbd5e1 !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] small {
-    color: #64748b !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] button {
-    background: #6366f1 !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 8px !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploader"] button:hover {
-    background: #4f46e5 !important;
-    color: #ffffff !important;
-}
-[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"],
-[data-testid="stSidebar"] [data-testid="stFileUploaderFileName"] span {
-    color: #e2e8f0 !important;
-    background: rgba(99,102,241,0.12) !important;
-}
-
-[data-testid="stSidebar"] label[data-baseweb="radio"] {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(148,163,184,0.15);
-    border-radius: 10px;
-    padding: 0.5rem 0.75rem;
-    margin-bottom: 0.35rem;
-    color: #e2e8f0 !important;
-}
-
-[data-testid="stSidebar"] .stButton > button[kind="primary"],
-[data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
-    background: linear-gradient(135deg, #6366f1, #8b5cf6) !important;
-    color: #fff !important;
-    border: none !important;
-    border-radius: 10px !important;
-    font-weight: 600 !important;
-}
-
-/* Chat history items */
-.chat-history-item {
-    padding: 0.55rem 0.65rem;
-    border-radius: 10px;
-    margin-bottom: 0.25rem;
-    border: 1px solid transparent;
-    font-size: 0.84rem;
-    color: #cbd5e1 !important;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.chat-history-item.active {
-    background: rgba(99,102,241,0.15);
-    border-color: rgba(99,102,241,0.35);
-    color: #f1f5f9 !important;
-}
-
-/* ── Hero ── */
-.hero-wrap {
-    background: linear-gradient(135deg, rgba(99,102,241,0.12) 0%, rgba(139,92,246,0.08) 100%);
-    border: 1px solid rgba(99,102,241,0.25);
-    border-radius: 20px;
-    padding: 1.5rem 1.75rem;
-    margin-bottom: 1.5rem;
-}
-.hero-wrap h1 {
-    font-size: 1.85rem;
-    font-weight: 800;
-    color: #f8fafc !important;
-    margin: 0 0 0.3rem 0;
-}
-.hero-wrap p { color: #94a3b8 !important; margin: 0 0 0.85rem 0; font-size: 0.92rem; }
-.badge-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
-.badge {
-    display: inline-flex; padding: 0.3rem 0.75rem; border-radius: 999px;
-    font-size: 0.75rem; font-weight: 600;
-}
-.badge-mode { background: rgba(99,102,241,0.2); color: #a5b4fc !important; border: 1px solid rgba(99,102,241,0.35); }
-.badge-rag { background: rgba(16,185,129,0.15); color: #6ee7b7 !important; border: 1px solid rgba(16,185,129,0.35); }
-.badge-stack { background: rgba(255,255,255,0.05); color: #94a3b8 !important; border: 1px solid rgba(148,163,184,0.15); }
-
-/* ── Chat messages ── */
-[data-testid="stChatMessage"] {
-    background: rgba(255,255,255,0.04) !important;
-    border: 1px solid rgba(148,163,184,0.12) !important;
-    border-radius: 16px !important;
-    padding: 0.85rem 1.1rem !important;
-    margin-bottom: 0.75rem !important;
-}
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] p,
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] li,
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] span,
-[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] {
-    color: #f1f5f9 !important;
-    line-height: 1.65 !important;
-    font-size: 0.95rem !important;
-}
-
-/* ── Chat input ── */
-[data-testid="stBottomBlockContainer"] {
-    background: rgba(11,17,32,0.95) !important;
-    border-top: 1px solid rgba(99,102,241,0.15) !important;
-}
-div[data-testid="stChatInput"] textarea {
-    background: #151d2e !important;
-    color: #f8fafc !important;
-    caret-color: #f8fafc !important;
-    border: 1px solid rgba(99,102,241,0.35) !important;
-    border-radius: 14px !important;
-}
-div[data-testid="stChatInput"] textarea::placeholder { color: #64748b !important; opacity: 1 !important; }
-
-.source-card {
-    background: #151d2e; border: 1px solid rgba(99,102,241,0.2);
-    border-left: 3px solid #6366f1; border-radius: 10px;
-    padding: 0.75rem 1rem; margin-bottom: 0.5rem;
-}
-.source-card p { color: #cbd5e1 !important; margin: 0; font-size: 0.85rem; }
-.source-card strong { color: #a5b4fc !important; }
-
-.status-card {
-    background: rgba(255,255,255,0.04); border-radius: 12px;
-    padding: 0.75rem 1rem; border: 1px solid rgba(148,163,184,0.12);
-}
-.status-ok { color: #34d399 !important; font-weight: 600; font-size: 0.85rem; }
-.status-warn { color: #fbbf24 !important; font-weight: 600; font-size: 0.85rem; }
-.status-err { color: #f87171 !important; font-weight: 600; font-size: 0.85rem; }
-
-.empty-state { text-align: center; padding: 3rem 1rem; }
-.empty-state h3 { color: #94a3b8 !important; font-weight: 600; }
-.empty-state p { color: #64748b !important; font-size: 0.9rem; }
-
-.streamlit-expanderHeader { color: #a5b4fc !important; font-weight: 600 !important; }
-</style>
-"""
-
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+st.markdown(build_css(st.session_state.theme), unsafe_allow_html=True)
 
 
-def render_sources(sources: list[dict]) -> None:
-    with st.expander(f"📚 Retrieved Sources ({len(sources)})"):
-        for source in sources:
-            st.markdown(
-                f"""
-                <div class="source-card">
-                    <p><strong>Source {source['index']}</strong> · Page {source['page']}</p>
-                    <p>{source['preview']}</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-
-def render_empty_state(is_rag: bool) -> None:
-    if is_rag:
-        st.markdown(
-            """
-            <div class="empty-state">
-                <div style="font-size:2.5rem;">📄</div>
-                <h3>Document Q&A Ready</h3>
-                <p>Upload a PDF in the sidebar, click <strong>Ingest Documents</strong>, then ask questions.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <div class="empty-state">
-                <div style="font-size:2.5rem;">💬</div>
-                <h3>Start a conversation</h3>
-                <p>Type a message below — powered by Groq &amp; LangGraph.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def current_mode_key(is_rag: bool) -> str:
-    return "rag" if is_rag else "general"
-
-
-def ensure_active_session(mode_key: str) -> str:
-    sessions = list_sessions(mode_key)
-    if st.session_state.get("active_session_id") and any(
-        s["id"] == st.session_state.active_session_id for s in sessions
-    ):
-        return st.session_state.active_session_id
-
+def ensure_session(mode: str) -> str:
+    key = "active_general_session" if mode == MODE_GENERAL else "active_doc_session"
+    sessions = list_sessions(mode)
+    active = st.session_state.get(key)
+    if active and any(s["id"] == active for s in sessions):
+        return active
     if sessions:
-        st.session_state.active_session_id = sessions[0]["id"]
+        st.session_state[key] = sessions[0]["id"]
         return sessions[0]["id"]
+    sid = create_session(mode)
+    st.session_state[key] = sid
+    return sid
 
-    new_id = create_session(mode_key)
-    st.session_state.active_session_id = new_id
-    return new_id
+
+def estimate_tokens(text: str) -> int:
+    return max(1, len(text.split()))
 
 
-# ── Session state ──
-if "upload_log" not in st.session_state:
-    st.session_state.upload_log = []
-if "active_session_id" not in st.session_state:
-    st.session_state.active_session_id = None
-if "menu_open_id" not in st.session_state:
-    st.session_state.menu_open_id = None
+def run_general_query(session_id: str, user_input: str) -> tuple[str, int, int]:
+    config = {"configurable": {"thread_id": f"gen-{session_id}"}}
+    start = time.time()
+    stream = chatbot.stream(
+        {"messages": [HumanMessage(content=user_input)]},
+        config=config,
+        stream_mode="messages",
+    )
+    ai_message = st.write_stream(
+        chunk.content for chunk, _ in stream if getattr(chunk, "content", None)
+    )
+    elapsed = int((time.time() - start) * 1000)
+    tokens = estimate_tokens((ai_message or "") + user_input)
+    st.session_state.last_runtime = {
+        "Response Time": f"{elapsed / 1000:.1f} sec",
+        "Tokens Used": str(tokens),
+    }
+    return ai_message or "", elapsed, tokens
+
+
+def run_rag_query(session_id: str, user_input: str, backend: str) -> tuple[str, list, int, int]:
+    config = {"configurable": {"thread_id": f"rag-{session_id}"}}
+    start = time.time()
+
+    st.session_state.agent_steps = [
+        {"label": "Query received", "done": True},
+        {"label": "Vector search (pgVector)", "done": False},
+        {"label": "Context ranking", "done": False},
+        {"label": "Groq LLM response", "done": False},
+    ]
+
+    inputs = {
+        "messages": [HumanMessage(content=user_input)],
+        "collection": COLLECTION,
+        "context": "",
+        "sources": [],
+    }
+
+    stream = rag_chatbot.stream(inputs, config=config, stream_mode="messages")
+    ai_message = st.write_stream(
+        chunk.content for chunk, _ in stream if getattr(chunk, "content", None)
+    )
+
+    st.session_state.agent_steps[1]["done"] = True
+    st.session_state.agent_steps[2]["done"] = True
+    state = rag_chatbot.get_state(config)
+    sources = format_sources(state.values.get("sources", []))
+    st.session_state.agent_steps[3]["done"] = True
+
+    elapsed = int((time.time() - start) * 1000)
+    tokens = estimate_tokens((ai_message or "") + user_input)
+    st.session_state.doc_last_sources = sources
+    st.session_state.doc_last_runtime = {
+        "Response Time": f"{elapsed / 1000:.1f} sec",
+        "Tokens Used": str(tokens),
+    }
+    return ai_message or "", sources, elapsed, tokens
+
+
+def render_sidebar_sessions(mode: str, session_key: str) -> None:
+    label = "General chats" if mode == MODE_GENERAL else "Document Q&A chats"
+    st.markdown(f"##### 💬 {label}")
+    active = st.session_state.get(session_key)
+    sessions = list_sessions(mode)
+    if not sessions:
+        st.caption("No chats yet.")
+        return
+    for session in sessions:
+        sid = session["id"]
+        title = (session["title"] or "New Chat")[:30]
+        c1, c2 = st.columns([5, 1])
+        with c1:
+            kind = "primary" if sid == active else "secondary"
+            if st.button(title, key=f"{mode}_{sid}", use_container_width=True, type=kind):
+                st.session_state[session_key] = sid
+                st.rerun()
+        with c2:
+            with st.popover("⋮", use_container_width=True):
+                if st.button("Delete", key=f"del_{mode}_{sid}", use_container_width=True):
+                    delete_session(sid)
+                    if st.session_state.get(session_key) == sid:
+                        st.session_state[session_key] = None
+                    st.rerun()
+
+
+def is_likely_jd(text: str) -> bool:
+    cleaned = text.strip()
+    if len(cleaned) > 180:
+        return True
+    lower = cleaned.lower()
+    keywords = (
+        "job description",
+        "requirements",
+        "responsibilities",
+        "qualifications",
+        "we are looking",
+        "about the role",
+        "must have",
+    )
+    return any(k in lower for k in keywords)
+
+
+def run_resume_analysis(jd_text: str, resume_bytes: bytes, resume_name: str) -> tuple[str, bytes, int]:
+    start = time.time()
+    resume_text = extract_resume_text(io.BytesIO(resume_bytes), resume_name)
+    tailored = analyze_jd_and_resume(jd_text, resume_text)
+    docx_bytes = build_resume_docx(tailored)
+    elapsed = int((time.time() - start) * 1000)
+    st.session_state.last_runtime = {
+        "Response Time": f"{elapsed / 1000:.1f} sec",
+        "Tokens Used": str(estimate_tokens(tailored + jd_text + resume_text)),
+    }
+    return tailored, docx_bytes, elapsed
+
+
+def render_general_chat_page() -> None:
+    session_id = ensure_session(MODE_GENERAL)
+    messages = get_messages(session_id)
+
+    chat_col, panel_col = st.columns([2.2, 1], gap="large")
+
+    with chat_col:
+        if not messages:
+            render_landing_hero()
+
+        for msg in messages:
+            with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🤖"):
+                render_message_header(msg["role"], msg.get("created_at"))
+                st.markdown(msg["content"])
+                if msg["role"] == "assistant":
+                    render_assistant_actions(msg.get("id"), msg["content"], msg.get("feedback"))
+
+        up_col, info_col = st.columns([1.2, 3])
+        with up_col:
+            resume_upload = st.file_uploader(
+                "Resume",
+                type=["pdf", "docx", "txt"],
+                label_visibility="collapsed",
+                key="chat_resume_upload",
+            )
+            if resume_upload:
+                st.session_state.resume_file_name = resume_upload.name
+                st.session_state.resume_file_bytes = resume_upload.getvalue()
+        with info_col:
+            if st.session_state.get("resume_file_name"):
+                st.caption(f"Resume attached: **{st.session_state.resume_file_name}** — paste JD below and send")
+            else:
+                st.caption("Attach resume (PDF/DOCX) for JD alignment, or chat normally")
+
+        user_input = st.chat_input("Ask anything — paste JD here for resume tailoring…")
+        if user_input:
+            if not messages:
+                update_session_title(session_id, auto_title(user_input))
+            add_message(session_id, "user", user_input)
+
+            with st.chat_message("user", avatar="👤"):
+                render_message_header("user")
+                st.markdown(user_input)
+            with st.chat_message("assistant", avatar="🤖"):
+                render_message_header("assistant")
+                has_resume = st.session_state.get("resume_file_bytes") and st.session_state.get("resume_file_name")
+                if has_resume and is_likely_jd(user_input):
+                    with st.spinner("Analyzing JD and tailoring resume…"):
+                        ai_message, docx_bytes, elapsed = run_resume_analysis(
+                            user_input,
+                            st.session_state.resume_file_bytes,
+                            st.session_state.resume_file_name,
+                        )
+                    st.session_state.last_resume_docx = docx_bytes
+                    st.markdown(ai_message)
+                    st.download_button(
+                        "Download tailored resume (.docx)",
+                        data=docx_bytes,
+                        file_name="tailored_resume.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="dl_resume_new",
+                    )
+                elif has_resume:
+                    ai_message = (
+                        "Paste the full **Job Description** in the chat (requirements, responsibilities, "
+                        "qualifications). I will generate a tailored one-page Word resume aligned to that JD."
+                    )
+                    elapsed = 0
+                    st.markdown(ai_message)
+                else:
+                    ai_message, elapsed, tokens = run_general_query(session_id, user_input)
+                add_message(session_id, "assistant", ai_message, response_time_ms=elapsed)
+                render_assistant_actions(None, ai_message, None)
+            st.rerun()
+
+    with panel_col:
+        render_model_info_panel(
+            get_active_backend().upper(),
+            "N/A — General Chat",
+            st.session_state.last_runtime,
+        )
+        st.download_button(
+            "📥 Export Chat",
+            data=export_session_txt(session_id),
+            file_name="chat.txt",
+            use_container_width=True,
+        )
+
+
+def render_documents_page(db_ok: bool, backend: str) -> None:
+    st.markdown("### 📄 Documents — Upload, Analytics & Q&A")
+    st.caption("Upload a PDF here. View how it is chunked and embedded, then ask questions below.")
+
+    up_col, info_col = st.columns([1, 1])
+    with up_col:
+        uploaded = st.file_uploader(
+            "⬇️ Drop PDF · TXT · CSV · MD",
+            type=["pdf", "txt", "csv", "md"],
+            accept_multiple_files=False,
+        )
+        if st.button("Index Document", type="primary", disabled=not uploaded or not db_ok):
+            with st.spinner("Chunking & embedding…"):
+                count, pages, name, ext, records = ingest_file(uploaded, COLLECTION)
+                register_document(name, COLLECTION, pages, count, ext)
+                save_document_chunks(name, COLLECTION, records)
+                st.session_state.selected_doc = name
+            st.success(f"Indexed **{name}** — {count} chunks embedded.")
+            st.rerun()
+
+    docs = list_documents(COLLECTION)
+    doc_names = [d["file_name"] for d in docs]
+
+    if not doc_names:
+        st.info("No documents yet. Upload a file above to get started.")
+        return
+
+    with info_col:
+        selected = st.selectbox(
+            "Select document",
+            doc_names,
+            index=doc_names.index(st.session_state.selected_doc)
+            if st.session_state.selected_doc in doc_names
+            else 0,
+        )
+        st.session_state.selected_doc = selected
+        doc_meta = next(d for d in docs if d["file_name"] == selected)
+        st.markdown(
+            f"**{selected}**  \n"
+            f"📃 {doc_meta.get('pages', 0)} pages · "
+            f"🧩 {doc_meta.get('chunks', 0)} chunks · "
+            f"✅ embedded in {backend}"
+        )
+
+    chunks = get_document_chunks(selected, COLLECTION)
+
+    st.markdown("---")
+    analytics_col, chunks_col = st.columns([1, 1])
+
+    with analytics_col:
+        if chunks:
+            render_chunk_analytics_box(chunks, backend)
+        else:
+            st.warning("Re-index this file to view chunk analytics.")
+
+    with chunks_col:
+        st.markdown("#### 🧩 Chunk Breakdown")
+        if chunks:
+            for chunk in chunks:
+                with st.expander(
+                    f"Chunk {chunk['chunk_index']} · Page {chunk.get('page', '?')} · "
+                    f"{chunk.get('char_count', 0)} chars"
+                ):
+                    st.text(chunk["content"])
+        else:
+            st.caption("No chunk data stored.")
+
+    st.markdown("---")
+    st.markdown("#### 💬 Ask questions about this document")
+
+    session_id = ensure_session(MODE_RAG)
+    doc_messages = get_messages(session_id)
+
+    for msg in doc_messages:
+        with st.chat_message(msg["role"], avatar="👤" if msg["role"] == "user" else "🤖"):
+            render_message_header(msg["role"], msg.get("created_at"))
+            st.markdown(msg["content"])
+            if msg["role"] == "assistant" and msg.get("sources"):
+                with st.expander("📚 Sources used"):
+                    for s in msg["sources"]:
+                        st.caption(f"📄 {s.get('source')} · Page {s.get('page')}")
+
+    doc_input = st.chat_input(f"Ask about **{selected}**…")
+    if doc_input:
+        if not doc_messages:
+            update_session_title(session_id, auto_title(doc_input))
+        add_message(session_id, "user", doc_input)
+
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(doc_input)
+        with st.chat_message("assistant", avatar="🤖"):
+            if not db_ok:
+                reply = "Vector store offline. Start Docker: `docker compose up -d`"
+                sources, elapsed = [], 0
+                st.markdown(reply)
+            else:
+                reply, sources, elapsed, _ = run_rag_query(session_id, doc_input, backend)
+            add_message(session_id, "assistant", reply, sources, response_time_ms=elapsed)
+        st.rerun()
+
+
+def render_analytics_page(db_ok: bool, backend: str) -> None:
+    st.markdown("### 📊 Analytics Dashboard")
+    render_analytics_dashboard(db_ok, backend, MODEL_NAME)
+
+
+def render_settings_page() -> None:
+    st.markdown("### ⚙ Settings")
+    theme = st.selectbox(
+        "Theme",
+        list(THEMES.keys()),
+        format_func=lambda k: THEMES[k]["label"],
+        index=list(THEMES.keys()).index(st.session_state.theme),
+    )
+    if theme != st.session_state.theme:
+        st.session_state.theme = theme
+        st.rerun()
+    st.info(f"Model: **{MODEL_NAME}** · Provider: **Groq**")
+
+
+# ── Navbar ──
+n1, n2, n3 = st.columns([5, 2, 1])
+with n1:
+    st.markdown(
+        '<div class="top-nav"><strong>🤖 Agentic AI Assistant</strong>'
+        '<span> · Groq + LangGraph + pgVector</span></div>',
+        unsafe_allow_html=True,
+    )
+with n2:
+    t = st.selectbox(
+        "theme",
+        list(THEMES.keys()),
+        format_func=lambda k: THEMES[k]["label"],
+        index=list(THEMES.keys()).index(st.session_state.theme),
+        label_visibility="collapsed",
+    )
+    if t != st.session_state.theme:
+        st.session_state.theme = t
+        st.rerun()
+with n3:
+    st.markdown("👤 Suraj")
+
+db_ok, _ = check_db_connection()
+backend = get_active_backend()
 
 # ── Sidebar ──
 with st.sidebar:
-    if st.button("➕ New Chat", use_container_width=True, type="primary"):
-        mode_key = st.session_state.get("mode_key", "general")
-        st.session_state.active_session_id = create_session(mode_key)
-        st.rerun()
+    st.markdown("## 🤖 Agentic AI")
+    st.caption("**Chats** = general AI  ·  **Documents** = PDF Q&A")
 
-    st.markdown("##### 💬 Chat History")
-    st.caption(f"Saved in {get_storage_label()}")
-
-    chat_mode = st.radio(
-        "Chat Mode",
-        ["💬 General Chat", "📄 Document Q&A (RAG)"],
+    page = st.radio(
+        "Menu",
+        ["💬 Chats", "📄 Documents", "📊 Analytics", "⚙ Settings"],
         label_visibility="collapsed",
     )
-    is_rag_mode = chat_mode.startswith("📄")
-    mode_key = current_mode_key(is_rag_mode)
-    st.session_state.mode_key = mode_key
 
-    sessions = list_sessions(mode_key)
-    active_id = ensure_active_session(mode_key)
+    if st.button("➕ New Chat", type="primary", use_container_width=True):
+        mode = MODE_GENERAL if page.startswith("💬") else MODE_RAG
+        key = "active_general_session" if mode == MODE_GENERAL else "active_doc_session"
+        st.session_state[key] = create_session(mode)
+        st.rerun()
 
-    if not sessions:
-        st.caption("No chats yet. Start a new one!")
+    st.caption(f"{'🟢' if db_ok else '🔴'} {backend} · {get_storage_label()}")
 
-    for session in sessions:
-        sid = session["id"]
-        is_active = sid == active_id
-        title = session["title"] or "New Chat"
+    if page.startswith("💬"):
+        render_sidebar_sessions(MODE_GENERAL, "active_general_session")
+    elif page.startswith("📄"):
+        render_sidebar_sessions(MODE_RAG, "active_doc_session")
 
-        col_title, col_menu = st.columns([5, 1])
-        with col_title:
-            btn_type = "primary" if is_active else "secondary"
-            if st.button(
-                title,
-                key=f"load_{sid}",
-                use_container_width=True,
-                type=btn_type,
-            ):
-                st.session_state.active_session_id = sid
-                st.rerun()
-
-        with col_menu:
-            with st.popover("⋮", use_container_width=True):
-                st.markdown(f"**{title}**")
-                new_title = st.text_input(
-                    "Rename",
-                    value=title,
-                    key=f"rename_input_{sid}",
-                    label_visibility="collapsed",
-                )
-                if st.button("Save name", key=f"rename_save_{sid}", use_container_width=True):
-                    if new_title.strip():
-                        update_session_title(sid, new_title.strip())
-                    st.rerun()
-                if st.button(
-                    "🗑️ Delete",
-                    key=f"delete_{sid}",
-                    use_container_width=True,
-                    type="secondary",
-                ):
-                    delete_session(sid)
-                    if st.session_state.active_session_id == sid:
-                        st.session_state.active_session_id = None
-                    st.rerun()
-
-    st.divider()
-
-    st.markdown("##### 🗄️ Vector Store")
-    db_ok, db_message = check_db_connection()
-    backend = get_active_backend()
-
-    if backend == "pgvector":
-        st.markdown(
-            '<div class="status-card"><span class="status-ok">● PostgreSQL + pgVector</span></div>',
-            unsafe_allow_html=True,
-        )
-    elif db_ok:
-        st.markdown(
-            '<div class="status-card"><span class="status-warn">● Chroma (local fallback)</span></div>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            '<div class="status-card"><span class="status-err">● Offline</span></div>',
-            unsafe_allow_html=True,
-        )
-
-    if is_rag_mode:
-        st.divider()
-        st.markdown("##### 📄 Document Upload")
-
-        uploaded_files = st.file_uploader(
-            "Upload PDF files",
-            type=["pdf"],
-            accept_multiple_files=True,
-            label_visibility="collapsed",
-        )
-
-        if st.button(
-            "⬆️ Ingest Documents",
-            use_container_width=True,
-            type="primary",
-            disabled=not uploaded_files,
-        ):
-            if not db_ok:
-                st.error("Vector store unavailable.")
-            else:
-                with st.spinner("Processing PDFs…"):
-                    for uploaded in uploaded_files:
-                        try:
-                            count, name = ingest_pdf_file(uploaded)
-                            st.session_state.upload_log.append(f"✅ {name} — {count} chunks")
-                        except Exception as exc:
-                            st.session_state.upload_log.append(f"❌ {uploaded.name} — {exc}")
-                st.success("Documents indexed!")
-                st.rerun()
-
-        if st.session_state.upload_log:
-            st.markdown("**Indexed**")
-            for entry in st.session_state.upload_log[-4:]:
-                st.caption(entry)
-
-# ── Header ──
-mode_badge = "badge-rag" if is_rag_mode else "badge-mode"
-mode_label = "RAG Document Q&A" if is_rag_mode else "General Chat"
-
-st.markdown(
-    f"""
-    <div class="hero-wrap">
-        <h1>🤖 Agentic AI Chatbot</h1>
-        <p>LangGraph · Groq LLM · LangChain RAG · pgVector · Chat history in {get_storage_label()}</p>
-        <div class="badge-row">
-            <span class="badge {mode_badge}">{mode_label}</span>
-            <span class="badge badge-stack">LangGraph</span>
-            <span class="badge badge-stack">Groq</span>
-            <span class="badge badge-stack">{backend.upper() if db_ok else "OFFLINE"}</span>
-        </div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ── Load messages from database ──
-session_id = st.session_state.active_session_id
-message_history = get_messages(session_id) if session_id else []
-
-config = {"configurable": {"thread_id": session_id or "default-thread"}}
-
-if not message_history:
-    render_empty_state(is_rag_mode)
-
-for message in message_history:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-        if message.get("sources"):
-            render_sources(message["sources"])
-
-# ── Chat input ──
-placeholder = (
-    "Ask a question about your uploaded documents…"
-    if is_rag_mode
-    else "Type your message here…"
-)
-user_input = st.chat_input(placeholder)
-
-if user_input and session_id:
-    add_message(session_id, "user", user_input)
-
-    if len(message_history) == 0:
-        update_session_title(session_id, auto_title(user_input))
-
-    with st.chat_message("user"):
-        st.markdown(user_input)
-
-    with st.chat_message("assistant"):
-        if is_rag_mode and not db_ok:
-            ai_message = (
-                "Vector store is unavailable. Install dependencies or run "
-                "`docker compose up -d`."
-            )
-            st.markdown(ai_message)
-            sources = []
-        else:
-            graph = rag_chatbot if is_rag_mode else chatbot
-            stream = graph.stream(
-                {"messages": [HumanMessage(content=user_input)]},
-                config=config,
-                stream_mode="messages",
-            )
-            ai_message = st.write_stream(
-                chunk.content
-                for chunk, _ in stream
-                if getattr(chunk, "content", None)
-            )
-            sources = []
-            if is_rag_mode:
-                state = graph.get_state(config)
-                retrieved = state.values.get("sources", [])
-                sources = format_sources(retrieved)
-                if sources:
-                    render_sources(sources)
-
-    add_message(session_id, "assistant", ai_message or "", sources)
-    st.rerun()
+# ── Route ──
+if page.startswith("📄"):
+    render_documents_page(db_ok, backend)
+elif page.startswith("📊"):
+    render_analytics_page(db_ok, backend)
+elif page.startswith("⚙"):
+    render_settings_page()
+else:
+    render_general_chat_page()
